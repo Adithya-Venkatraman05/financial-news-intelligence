@@ -1,7 +1,12 @@
-import requests
 from fastapi import FastAPI, HTTPException, Query
 
 from services.config import settings
+from services.marketaux_client import (
+    QuotaExceeded,
+    UpstreamError,
+    UpstreamTimeout,
+    fetch_news,
+)
 
 app = FastAPI(
     title="Financial News Intelligence Agent",
@@ -30,6 +35,10 @@ def get_news(
         default=None,
         description="Optional comma-separated stock symbols, e.g. AAPL,TSLA",
     ),
+    countries: str | None = Query(
+        default=None,
+        description="Optional comma-separated country codes, e.g. in,us",
+    ),
     limit: int = Query(default=3, ge=1, le=3),
 ):
     if not settings.marketaux_api_token:
@@ -38,23 +47,20 @@ def get_news(
             detail="MARKETAUX_API_TOKEN is missing from .env",
         )
 
-    params = {
-        "api_token": settings.marketaux_api_token,
-        "language": "en",
-        "must_have_entities": "true",
-        "limit": limit,
-    }
+    params = {"limit": limit}
     if symbols:
         params["symbols"] = symbols
+    if countries:
+        params["countries"] = countries
 
     try:
-        response = requests.get(settings.marketaux_base_url, params=params, timeout=15)
-        response.raise_for_status()
-        payload = response.json()
-    except requests.Timeout as exc:
-        raise HTTPException(status_code=504, detail="Marketaux request timed out") from exc
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail="Could not retrieve news from Marketaux") from exc
+        payload = fetch_news(**params)
+    except QuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except UpstreamTimeout as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except UpstreamError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=502, detail="Marketaux returned invalid JSON") from exc
 
